@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Footprint BTCUSDT com IA Probabilística</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    html, body {
+      margin: 0; padding: 0; background: #111; color: #fff;
+      font-family: Arial, sans-serif; height: 100%; overflow-x: hidden;
+    }
+    #container {
+      position: relative; width: 100vw; height: 70vh;
+    }
+    canvas {
+      width: 100% !important; height: 100% !important;
+    }
+    #vol-profile {
+      position: absolute; top: 10px; right: 10px;
+      background: rgba(0,0,0,0.6); padding: 8px;
+      font-size: 12px; color: #0f0;
+    }
+    #ia-signals {
+      margin: 10px; padding: 10px;
+      background: rgba(0,0,0,0.4);
+      border: 1px solid #0ff;
+      font-size: 14px;
+    }
+    #controls {
+      margin: 10px;
+    }
+    select {
+      background: #000; color: #0f0;
+      border: 1px solid #0f0;
+    }
+  </style>
+</head>
+<body>
+  <h2 style="margin-left:10px;">📊 BTCUSDT Footprint com IA</h2>
+  <div id="controls">
+    Intervalo da vela:
+    <select id="intervalSelect">
+      <option value="1">1m</option>
+      <option value="2">2m</option>
+      <option value="5" selected>5m</option>
+    </select>
+  </div>
+  <div id="container">
+    <canvas id="footprintChart"></canvas>
+    <div id="vol-profile"></div>
+  </div>
+  <div id="ia-signals">🔍 <b>Sinais da IA</b>: aguardando padrões...</div>
+
+  <script>
+    const ctx = document.getElementById('footprintChart').getContext('2d');
+    const volProfileEl = document.getElementById('vol-profile');
+    const signalBox = document.getElementById('ia-signals');
+    const intervalSelect = document.getElementById('intervalSelect');
+
+    let intervalMinutes = parseInt(intervalSelect.value);
+    intervalSelect.onchange = () => {
+      intervalMinutes = parseInt(intervalSelect.value);
+      resetChart();
+    };
+
+    const MAX_BARS = 100;
+    const labels = [], deltas = [], bidVolumes = [], askVolumes = [];
+    let priceMap = {}, buys = 0, sells = 0, intervalStartTime = Date.now();
+
+    const chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Delta', data: deltas,
+            backgroundColor: ctx => ctx.raw >= 0 ? 'rgba(0,255,0,0.4)' : 'rgba(255,0,0,0.4)',
+            borderColor: '#fff', borderWidth: 1
+          },
+          {
+            label: 'Bid Vol', data: bidVolumes,
+            type: 'line', borderColor: '#0ff', pointRadius: 0
+          },
+          {
+            label: 'Ask Vol', data: askVolumes,
+            type: 'line', borderColor: '#f0f', pointRadius: 0
+          }
+        ]
+      },
+      options: {
+        animation: false, responsive: true,
+        plugins: { legend: { labels: { color: '#0ff' } } },
+        scales: {
+          x: { ticks: { color: '#0ff' } },
+          y: { ticks: { color: '#0f0' }, beginAtZero: true }
+        }
+      }
+    });
+
+    const ws = new WebSocket("wss://stream.binance.com:9443/ws/btcusdt@trade");
+    ws.onmessage = (event) => {
+      const { p, q, m } = JSON.parse(event.data);
+      const price = parseFloat(p).toFixed(2);
+      const qty = parseFloat(q);
+      const isBuy = !m;
+
+      priceMap[price] = (priceMap[price] || 0) + qty;
+      isBuy ? buys += qty : sells += qty;
+
+      const now = Date.now();
+      const elapsed = (now - intervalStartTime) / 1000;
+
+      if (elapsed >= intervalMinutes * 60) {
+        const label = new Date().toLocaleTimeString();
+        if (labels.length >= MAX_BARS) {
+          labels.shift(); deltas.shift(); bidVolumes.shift(); askVolumes.shift();
+        }
+        labels.push(label);
+        deltas.push(buys - sells);
+        bidVolumes.push(sells);
+        askVolumes.push(buys);
+        intervalStartTime = now;
+        applyAI(buys, sells, buys - sells);
+        buys = sells = 0; priceMap = {};
+      } else {
+        if (!labels.includes('Atual')) {
+          labels.push('Atual'); deltas.push(0); bidVolumes.push(0); askVolumes.push(0);
+        }
+        deltas[deltas.length - 1] = buys - sells;
+        bidVolumes[bidVolumes.length - 1] = sells;
+        askVolumes[askVolumes.length - 1] = buys;
+      }
+      chart.update('none'); updateVolumeProfile();
+    };
+
+    function updateVolumeProfile() {
+      const sorted = Object.entries(priceMap)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 15)
+        .map(([p, v]) => `${p}: ${v.toFixed(2)}`)
+        .join('<br>');
+      volProfileEl.innerHTML = `<b>🔍 Volume Profile</b><br>${sorted}`;
+    }
+
+    function applyAI(buys, sells, delta) {
+      const total = buys + sells;
+      const probAlta = (buys / total) * (delta > 0 ? 1 : 0.5);
+      const probBaixa = (sells / total) * (delta < 0 ? 1 : 0.5);
+
+      const bayes = probAlta * 0.7 + probBaixa * 0.3;
+      const markov = delta > 0 ? 0.9 : 0.1;
+      const mediaMovel = deltas.slice(-3).reduce((a, b) => a + b, 0) / 3;
+      const tendencia = mediaMovel > 0 ? 1 : -1;
+      const ensemble = (probAlta + bayes + markov + (tendencia > 0 ? 1 : 0)) / 4;
+
+      if (ensemble > 0.7) {
+        signalBox.innerHTML = "📈 <b>IA: Forte probabilidade de ALTA</b>";
+      } else if (ensemble < 0.3) {
+        signalBox.innerHTML = "📉 <b>IA: Forte probabilidade de QUEDA</b>";
+      } else {
+        signalBox.innerHTML = "🔍 <b>IA analisando... sem sinal decisivo.</b>";
+      }
+    }
+
+    function resetChart() {
+      labels.length = deltas.length = bidVolumes.length = askVolumes.length = 0;
+      buys = sells = 0; intervalStartTime = Date.now(); priceMap = {};
+    }
+  </script>
+</body>
+</html>
